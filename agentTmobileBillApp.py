@@ -8,6 +8,7 @@
 # In terminal do : streamlit run agentTmobileBillApp.py
 # CTRL-C to stop the app in terminal (mac os)
 #
+# Remote origin is https://github.com/dgupt6/agentTmobileBillApp
 # Setup:
 #   pip install streamlit pdfplumber pandas pydantic requests openai anthropic
 #   Default provider: Groq free tier -- put GROQ_API_KEY in .streamlit/secrets.toml
