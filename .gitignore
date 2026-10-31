@@ -1,0 +1,15 @@
+# Secrets and personal data -- never commit
+.streamlit/secrets.toml
+config.json
+*.pdf
+*.csv
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+*.db

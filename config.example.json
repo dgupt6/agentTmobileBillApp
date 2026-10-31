@@ -1,0 +1,4 @@
+{
+  "to_address_list": ["person1@example.com", "person2@example.com"],
+  "main_address_list": ["person1@example.com", "person2@example.com", "person3@example.com"]
+}
