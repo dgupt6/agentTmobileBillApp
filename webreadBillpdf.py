@@ -8,6 +8,9 @@
 # -----------Mod log -------------                                     #
 # Date      : Sept 2 2025                    Author: Devraj Gupta      #
 # Revision 1: Added change to support new line for kids watch addition.#
+# Date      : Nov 11 2026                                              #
+# Revision 2: Names, phone numbers and emails moved to a billing config #
+#             (secrets.toml [billing] or uploaded .toml) + onboarding. #
 ########################################################################
 import pdfplumber
 import pandas as pd
@@ -16,8 +19,10 @@ import smtplib
 from email.message import EmailMessage
 from datetime import datetime
 import streamlit as st
-import json
 from io import StringIO
+
+from tmobile_bill_agent.bill_config import find_unmapped, normalize_phone
+from tmobile_bill_agent.config_ui import billing_config_sidebar, onboarding_editor
 
 debug_mode = False
 
@@ -84,73 +89,55 @@ def extract_bill_summary(pdf_path):
     return df, totals_data
 
 
-def deriveActualAmt(dflocal):
-    # Replace the value using the replace method
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(480) 567-6735", "Devrajx6735")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(602) 554-7693", "Devraj Spousex7693")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(623) 296-3453", "Bireswar Spousex3453")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(281) 710-7794", "Sri Spousex7794")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(713) 859-6667", "Srix6667")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(623) 628-0940", "Bireswarx0940")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(512) 906-6312", "Kaustubhx6312")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(623) 759-2902", "Atri spousex2902")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(623) 986-7834", "Atrix7834")
-    dflocal["Phone Number"] = dflocal["Phone Number"].replace("(737) 287-4083", "Atri Daughterx4083")
+def deriveActualAmt(dflocal, config):
+    """Per person amounts. config (BillingConfig) says who owns each line and whether
+    its plan cost is 'shared' (pooled with the account charge and split equally) or
+    'own' (the line pays exactly its own charges)."""
+    lines = config.lines_by_phone
+    dflocal = dflocal.copy()
 
-    # Change the Kids Watch line charge from Plans to Equipment amount.
-    watchCharge = dflocal.loc[dflocal["Phone Number"] == "Atri Daughterx4083","Plans"]
-    dflocal.loc[dflocal["Phone Number"] == "Atri Daughterx4083","Plans"] = 0.0
-    dflocal.loc[dflocal["Phone Number"] == "Atri Daughterx4083","Equipment"] = watchCharge
+    unmapped = find_unmapped(dflocal["Phone Number"], config)
+    if unmapped:
+        raise ValueError("Phone numbers not in the billing config: " + ", ".join(unmapped))
 
-    ny_rows = dflocal[dflocal['Phone Number'] == 'Account']
-    actlvl_charge = float(ny_rows['Total'].to_string(index=False))
+    is_account = dflocal["Phone Number"] == "Account"
+    line_of = dflocal["Phone Number"].map(
+        lambda p: None if p == "Account" else lines[normalize_phone(p)])
 
-    mask2 = (dflocal["Phone Number"] != "Atri Daughterx4083") & (dflocal["Phone Number"] != "Account")
-    line_charges = dflocal[mask2]["Plans"].tolist()
-    #line_charges = dflocal[dflocal["Phone Number"] != "Account"]["Plans"].tolist()
+    # 'own' lines (e.g. a kids watch): show the plan charge as Equipment and keep
+    # it out of the shared pool.
+    is_own = line_of.map(lambda line: line is not None and line.split == "own")
+    dflocal.loc[is_own, "Equipment"] = dflocal.loc[is_own, "Equipment"] + dflocal.loc[is_own, "Plans"]
+    dflocal.loc[is_own, "Plans"] = 0.0
 
-    sum_linecharges = 0
-    num_of_line = 0
-    for num_of_line, linecharge in enumerate(line_charges):
-        sum_linecharges += linecharge
-
-    num_of_line = num_of_line + 1
-
-    # Add acct and line charge
-    totalacctandlinecharge = actlvl_charge + sum_linecharges
-    perhead_linecharge = round((totalacctandlinecharge / num_of_line), 2)
-
-    # Set updated Plan amount
-    mask3 = (dflocal["Phone Number"] != "Atri Daughterx4083") & (dflocal["Phone Number"] != "Account")
-    dflocal.loc[mask3, "Plans"] = perhead_linecharge
-    #dflocal.loc[dflocal["Phone Number"] != "Account", "Plans"] = perhead_linecharge
+    actlvl_charge = float(dflocal.loc[is_account, "Total"].sum())
+    is_shared = ~is_account & ~is_own
+    num_of_line = int(is_shared.sum())
+    if num_of_line == 0:
+        if actlvl_charge:
+            raise ValueError("No 'shared' lines to split the account charge across.")
+    else:
+        # Add acct and line charge, then split equally
+        totalacctandlinecharge = actlvl_charge + float(dflocal.loc[is_shared, "Plans"].sum())
+        perhead_linecharge = round((totalacctandlinecharge / num_of_line), 2)
+        dflocal.loc[is_shared, "Plans"] = perhead_linecharge
 
     dflocal["Individual amount"] = dflocal[["Plans", "Equipment", "Services"]].sum(axis=1)
+    dflocal["Person"] = line_of.map(lambda line: line.person if line else None)
+    dflocal["Phone Number"] = [line.label if line else "Account" for line in line_of]
 
-    # Define a mapping for grouping
-    dflocal["Person"] = dflocal["Phone Number"].apply(
-        lambda x: "Devraj" if "Devraj" in x else
-        "Sri" if "Sri" in x else
-        "Bireswar" if "Bireswar" in x else
-        "Atri" if "Atri" in x else
-        "Kaustubh" if "Kaustubh" in x else
-        None
-    )
-
-    # Filter out rows that don't belong to any group
+    # Aggregate Total by Person (the Account row has no person)
     df_grouped = dflocal[dflocal["Person"].notna()]
-
-    # Aggregate Total by Group
     resultdf = df_grouped.groupby("Person", as_index=False).agg({"Individual amount": "sum"})
     return resultdf
 
 
-def getemailcontent(output):
+def getemailcontent(output, config):
     today = datetime.now()
     BillMonth = today.strftime("%b")
     BillYear = today.year
 
-    if today.day > 16:
+    if today.day > config.due_day + 10:
         due_date = (today.replace(day=1) + pd.DateOffset(months=1))
         DueMonth = due_date.strftime("%b")
         DueYear = int(due_date.year)
@@ -163,27 +150,25 @@ def getemailcontent(output):
     body = f"""
     Hi All,
 
-    Please check and pay the T-Mobile bill, due on {DueMonth} 6 {DueYear}.
+    Please check and pay the T-Mobile bill, due on {DueMonth} {config.due_day} {DueYear}.
 
     {output}
 
     Note: Generated through automation
 
     Regards,  
-    Devraj Gupta
+    {config.owner_name}
     """
     # ----------------------------------------------------------------------#
 
     return subject, body
 
 
-def load_email_list():
-    with open('config.json', 'r') as file:
-        config = json.load(file)
-        return config['to_address_list'], config['main_address_list']
+def send_email(subject, body, recipients):
+    if not recipients:
+        st.error("No email addresses in the billing config: add 'emails' to the members.")
+        st.stop()
 
-
-def send_email(subject, body):
     with st.sidebar:
         st.title("Provide email and app password:")
         from_email = st.text_input("Your personal email")
@@ -192,13 +177,10 @@ def send_email(subject, body):
     if not emailAppPwd or not from_email:
         st.stop()
 
-    to_address_list, main_address_list = load_email_list()
-
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = from_email
-    #msg['To'] = to_address_list
-    msg['To'] = main_address_list
+    msg['To'] = recipients
     msg.set_content(body)
 
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
@@ -206,7 +188,7 @@ def send_email(subject, body):
         smtp.send_message(msg)
 
 # Validate whether amount is in exceptable limit
-def validateAndSend(billamtDF, totalBill, TotalfromPersons):
+def validateAndSend(billamtDF, totalBill, TotalfromPersons, config):
     diff = abs(TotalfromPersons - totalBill)
     diff_flag = False
     if diff < 0.05:
@@ -235,8 +217,8 @@ def validateAndSend(billamtDF, totalBill, TotalfromPersons):
     if sendemailvar.upper() == 'Y' and diff_flag == True:
         # Placeholder for email-sending logic
         billamt_str = billamtDF.to_string(index=False).strip()
-        subject, body = getemailcontent(billamt_str)
-        send_email(subject, body)
+        subject, body = getemailcontent(billamt_str, config)
+        send_email(subject, body, config.recipients)
         st.write("Email has been sent!")
     elif sendemailvar.upper() == 'N':
         st.write("Need further review..")
@@ -244,30 +226,36 @@ def validateAndSend(billamtDF, totalBill, TotalfromPersons):
 
 # Extract and display the consolidated bill summary
 if __name__ == "__main__":
-    st.title(" Welcome to T-mobile Bill Analyzer ( Devraj Gupta) ")
-    filename = ""
-    emailsendflag = True
+    st.title(" Welcome to T-mobile Bill Analyzer ")
+    config = billing_config_sidebar()
     st.write("Upload the T-mobile bill file to extract and analyze.")
     uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
-    if uploaded_file:
-        consolidated_df, totalBill = extract_bill_summary(uploaded_file)
-        if consolidated_df is not None:
-            # emailsendflag = True
-            billamtDF = deriveActualAmt(consolidated_df)
-            sumofindividualamt = billamtDF['Individual amount'].sum()
-            st.write(billamtDF)  # this is important print for validation. Keep it.
-            st.write(
-                f"Total Individual Amount : {sumofindividualamt}")  # this is important print for validation. Keep it.
-            st.write(f"Total Bill Stmt Amount : {totalBill}")  # this is important print for validation. Keep it.
-            validateAndSend(billamtDF, totalBill, sumofindividualamt)
-        else:
-            emailsendflag = False
-            st.stop()
-    else:
+    if not uploaded_file:
         st.stop()
 
-    if emailsendflag == False:
-        st.write("Error in generation of T-mobile bill report")
-        subject = "Pay T-mobile Bill : Error"
-        body = "Error in generation of bill details. Devraj is checking"
-        send_email(subject, body)
+    result = extract_bill_summary(uploaded_file)
+    if result is None:
+        st.error("Could not find the 'THIS BILL SUMMARY' section in this PDF.")
+        if config:
+            send_email("Pay T-mobile Bill : Error",
+                       f"Error in generation of bill details. {config.owner_name} is checking",
+                       config.recipients)
+        st.stop()
+    consolidated_df, totalBill = result
+
+    if config is None or find_unmapped(consolidated_df["Phone Number"], config):
+        st.subheader("Set up billing config")
+        if config is not None:
+            st.warning("Some phone numbers on this bill are not in the billing config.")
+        onboarding_editor(consolidated_df["Phone Number"], config)
+        st.stop()
+    with st.expander("Edit billing config"):
+        onboarding_editor(consolidated_df["Phone Number"], config, key="edit")
+
+    billamtDF = deriveActualAmt(consolidated_df, config)
+    sumofindividualamt = billamtDF['Individual amount'].sum()
+    st.write(billamtDF)  # this is important print for validation. Keep it.
+    st.write(
+        f"Total Individual Amount : {sumofindividualamt}")  # this is important print for validation. Keep it.
+    st.write(f"Total Bill Stmt Amount : {totalBill}")  # this is important print for validation. Keep it.
+    validateAndSend(billamtDF, totalBill, sumofindividualamt, config)

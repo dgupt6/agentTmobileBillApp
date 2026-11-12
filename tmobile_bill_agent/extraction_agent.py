@@ -47,7 +47,7 @@ You receive the raw text of the "THIS BILL SUMMARY" table. Copy it into JSON:
   "One-time charges" are ONE column.
 - "totals_amounts": every amount on the "Totals" row, in order, exactly as printed.
 - "rows": one entry for the "Account" row and one per phone line, in table order:
-    label     : "Account", or the phone number exactly as printed, e.g. "(480) 567-6735".
+    label     : "Account", or the phone number exactly as printed, e.g. "(111) 222-3333".
     line_type : the words between the phone number and the first amount
                 (e.g. "Voice", "Mobile Internet"); drop markers like "- New". "Account" for Account.
     amounts   : every amount on that row in order, exactly as printed, including "-"

@@ -1,7 +1,7 @@
 # Agent driven T-Mobile bill analyzer (Streamlit).
 # An LLM agent (Ollama local / free cloud tier / Anthropic fallback) reads the
 # "THIS BILL SUMMARY" table from the bill PDF -- no regex parsing. The per line
-# math, CSV download and email are reused unchanged from webreadBillpdf.py.
+# math, CSV download and email are reused from webreadBillpdf.py.
 # Developer :  Devraj Gupta
 # Version 1.0 Sep 2026
 #
@@ -14,9 +14,10 @@
 #   Default provider: Groq free tier -- put GROQ_API_KEY in .streamlit/secrets.toml
 #   Other keys (sidebar, st.secrets or env): GEMINI_API_KEY, OPENROUTER_API_KEY,
 #   ANTHROPIC_API_KEY. Local/free alternative: Ollama (`ollama pull qwen2.5:7b`)
+#   Names, phone lines and email recipients: [billing] in secrets.toml, an uploaded
+#   .toml in the sidebar, or the onboarding editor shown for a new bill.
 ########################################################################
 import io
-import json
 import os
 
 import pandas as pd
@@ -24,6 +25,8 @@ import streamlit as st
 
 from webreadBillpdf import deriveActualAmt, validateAndSend
 from tmobile_bill_agent import bill_store
+from tmobile_bill_agent.bill_config import find_unmapped
+from tmobile_bill_agent.config_ui import billing_config_sidebar, onboarding_editor
 from tmobile_bill_agent.llm_providers import PROVIDERS, LLMClient, LLMError, list_ollama_models
 from tmobile_bill_agent.extraction_agent import (
     run_bill_agent, validate_table, to_derive_frame, balance_cents)
@@ -40,20 +43,6 @@ def default_api_key(env_name):
     except Exception:
         pass  # no secrets.toml
     return os.environ.get(env_name, "")
-
-
-def ensure_email_config():
-    """webreadBillpdf.load_email_list() reads config.json. That file is not committed to git,
-    so on Streamlit Cloud build it from the to_address_list / main_address_list secrets."""
-    if os.path.exists("config.json"):
-        return True
-    try:
-        lists = {k: list(st.secrets[k]) for k in ("to_address_list", "main_address_list")}
-    except Exception:
-        return False
-    with open("config.json", "w") as file:
-        json.dump(lists, file)
-    return True
 
 
 def llm_sidebar():
@@ -215,11 +204,12 @@ def history_page():
 
 if __name__ == "__main__":
     st.set_page_config(page_title="Agent T-Mobile Bill Analyzer", layout="wide")
-    st.title("🤖 Agent T-Mobile Bill Analyzer ( Devraj Gupta )")
+    st.title("🤖 Agent T-Mobile Bill Analyzer")
     page = st.sidebar.radio("View", ["Analyze new bill", "Bill history"])
     if page == "Bill history":
         history_page()
         st.stop()
+    billing_config = billing_config_sidebar()
     provider, model, api_key, max_attempts = llm_sidebar()
 
     st.write("Upload the T-mobile bill file; an LLM agent extracts the per line charges.")
@@ -273,10 +263,25 @@ if __name__ == "__main__":
     else:
         st.success("Bill table checks passed: every row and the grand total add up.")
 
-    # ---- 2. Per line math (unchanged deriveActualAmt from webreadBillpdf.py)
+    # ---- Billing config: who pays for each line (onboarding for new phone numbers)
+    unmapped = find_unmapped(bill_df["Phone Number"], billing_config)
+    if billing_config is None or unmapped:
+        st.subheader("Set up billing config")
+        if billing_config is None:
+            st.info("No billing config found. Assign each line on this bill to a person; "
+                    "then download the config for next time or use it right away.")
+        else:
+            st.warning("These phone numbers are not in the billing config: "
+                       + ", ".join(unmapped))
+        onboarding_editor(bill_df["Phone Number"], billing_config)
+        st.stop()
+    with st.expander("Edit billing config"):
+        onboarding_editor(bill_df["Phone Number"], billing_config, key="edit")
+
+    # ---- 2. Per line math (deriveActualAmt from webreadBillpdf.py)
     st.subheader("2. Per person split")
     try:
-        billamtDF = deriveActualAmt(to_derive_frame(bill_df))
+        billamtDF = deriveActualAmt(to_derive_frame(bill_df), billing_config)
     except Exception as exc:
         st.error(f"Per line calculation failed: {exc}")
         st.stop()
@@ -297,12 +302,11 @@ if __name__ == "__main__":
     else:
         st.info(f"Difference vs bill: {diff:+.2f}. Use 'Auto-balance cents' or edit 'Final amount'.")
 
-    # ---- 4. CSV download and email (unchanged validateAndSend from webreadBillpdf.py)
+    # ---- 4. CSV download and email (validateAndSend from webreadBillpdf.py)
     st.subheader("4. Save CSV / send email")
-    if not ensure_email_config():
-        st.warning("Email recipients not configured: add to_address_list and main_address_list "
-                   "to config.json (local) or to the app's Secrets (Streamlit Cloud).")
-    validateAndSend(finalDF, totalBill, sumofindividualamt)
+    if not billing_config.recipients:
+        st.warning("No email recipients: add 'emails' to the members in the billing config.")
+    validateAndSend(finalDF, totalBill, sumofindividualamt, billing_config)
 
     # ---- 5. Save to history (SQLite)
     st.subheader("5. Save to history")
