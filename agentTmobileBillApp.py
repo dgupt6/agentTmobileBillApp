@@ -16,6 +16,8 @@
 #   ANTHROPIC_API_KEY. Local/free alternative: Ollama (`ollama pull qwen2.5:7b`)
 #   Names, phone lines and email recipients: [billing] in secrets.toml, an uploaded
 #   .toml in the sidebar, or the onboarding editor shown for a new bill.
+#   AI assistant chat ('Ask AI' popover) uses Groq with the same GROQ_API_KEY;
+#   optional GROQ_CHAT_MODEL secret picks the chat model.
 ########################################################################
 import io
 import os
@@ -25,13 +27,34 @@ import streamlit as st
 
 from webreadBillpdf import deriveActualAmt, validateAndSend
 from tmobile_bill_agent import bill_store
+from tmobile_bill_agent.bill_chat import build_bill_context
 from tmobile_bill_agent.bill_config import find_unmapped
+from tmobile_bill_agent.chat_ui import chat_popover
 from tmobile_bill_agent.config_ui import billing_config_sidebar, onboarding_editor
 from tmobile_bill_agent.llm_providers import PROVIDERS, LLMClient, LLMError, list_ollama_models
 from tmobile_bill_agent.extraction_agent import (
-    run_bill_agent, validate_table, to_derive_frame, balance_cents)
+    run_bill_agent, read_pdf_text, validate_table, to_derive_frame, balance_cents)
 
 AMOUNT_COLS = ["Plans", "Equipment", "Services", "One-time", "Total"]
+CHAT_PARTS = "ai_chat_parts"   # bill data saved for the AI assistant (see chat_header)
+CHAT_PDF = "ai_chat_pdf"       # (file_key, page texts) of the uploaded statement PDF
+
+
+def chat_header():
+    """Title plus the 'Ask AI' popover. The popover is drawn at the top of the page, so
+    it uses the bill data saved by the previous run (each chat message is its own rerun,
+    so that data is current). Drawing it at the top also keeps it available when a
+    later step calls st.stop()."""
+    title_col, chat_col = st.columns([3, 1], vertical_alignment="bottom")
+    title_col.title("🤖 Agent T-Mobile Bill Analyzer")
+    context = build_bill_context(**st.session_state.get(CHAT_PARTS, {}),
+                                 history=bill_store.list_totals())
+    pdf = st.session_state.get(CHAT_PDF)
+    chat_popover(context, pdf_pages=pdf[1] if pdf else None, container=chat_col)
+
+
+def remember_for_chat(**parts):
+    st.session_state.setdefault(CHAT_PARTS, {}).update(parts)
 
 
 def default_api_key(env_name):
@@ -204,11 +227,12 @@ def history_page():
 
 if __name__ == "__main__":
     st.set_page_config(page_title="Agent T-Mobile Bill Analyzer", layout="wide")
-    st.title("🤖 Agent T-Mobile Bill Analyzer")
+    chat_header()
     page = st.sidebar.radio("View", ["Analyze new bill", "Bill history"])
     if page == "Bill history":
         history_page()
         st.stop()
+    st.session_state[CHAT_PARTS] = {}   # rebuilt below from what this run shows
     billing_config = billing_config_sidebar()
     provider, model, api_key, max_attempts = llm_sidebar()
 
@@ -216,9 +240,17 @@ if __name__ == "__main__":
     uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
     if not uploaded_file:
         st.session_state.pop("extraction", None)
+        st.session_state.pop(CHAT_PDF, None)
         st.stop()
 
     file_key = (uploaded_file.name, uploaded_file.size)
+    if st.session_state.get(CHAT_PDF, (None,))[0] != file_key:
+        # Statement text for the AI assistant, read once per uploaded file.
+        try:
+            pages = read_pdf_text(io.BytesIO(uploaded_file.getvalue()))
+        except Exception:
+            pages = []
+        st.session_state[CHAT_PDF] = (file_key, pages)
     extraction = st.session_state.get("extraction")
     if extraction and extraction["file_key"] != file_key:
         st.session_state.pop("extraction", None)
@@ -257,6 +289,8 @@ if __name__ == "__main__":
     totalBill = st.number_input("Total bill statement amount", value=float(extraction["total"]),
                                 step=0.01, format="%.2f")
 
+    remember_for_chat(bill_df=bill_df, statement_total=totalBill, config=billing_config)
+
     issues = validate_table(bill_df, totalBill)
     if issues:
         st.warning("Validation issues:\n- " + "\n- ".join(issues))
@@ -292,6 +326,7 @@ if __name__ == "__main__":
     st.subheader("3. Adjust per person amounts (optional)")
     finalDF = adjustment_editor(calculated, totalBill)
 
+    remember_for_chat(per_person=finalDF)
     sumofindividualamt = round(finalDF["Individual amount"].sum(), 2)
     st.write(finalDF)  # this is important print for validation. Keep it.
     st.write(f"Total Individual Amount : {sumofindividualamt}")  # this is important print for validation. Keep it.
