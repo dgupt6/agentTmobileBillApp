@@ -4,6 +4,7 @@
 # math, CSV download and email are reused from webreadBillpdf.py.
 # Developer :  Devraj Gupta
 # Version 1.0 Sep 2026
+# Version 1.1 Nov 2026 : billing config + onboarding, AI assistant chat
 #
 # In terminal do : streamlit run agentTmobileBillApp.py
 # CTRL-C to stop the app in terminal (mac os)
@@ -35,6 +36,9 @@ from tmobile_bill_agent.llm_providers import PROVIDERS, LLMClient, LLMError, lis
 from tmobile_bill_agent.extraction_agent import (
     run_bill_agent, read_pdf_text, validate_table, to_derive_frame, balance_cents)
 
+APP_AUTHOR = "Devraj Gupta"
+APP_VERSION = "1.1"
+APP_RELEASE = "Nov 2026"
 AMOUNT_COLS = ["Plans", "Equipment", "Services", "One-time", "Total"]
 CHAT_PARTS = "ai_chat_parts"   # bill data saved for the AI assistant (see chat_header)
 CHAT_PDF = "ai_chat_pdf"       # (file_key, page texts) of the uploaded statement PDF
@@ -228,6 +232,9 @@ def history_page():
 if __name__ == "__main__":
     st.set_page_config(page_title="Agent T-Mobile Bill Analyzer", layout="wide")
     chat_header()
+    # At the top of the sidebar so it shows even when a later step calls st.stop().
+    st.sidebar.caption(f"👤 Author: **{APP_AUTHOR}**  \n"
+                       f"🏷️ Version **{APP_VERSION}** · {APP_RELEASE}")
     page = st.sidebar.radio("View", ["Analyze new bill", "Bill history"])
     if page == "Bill history":
         history_page()
