@@ -25,9 +25,11 @@ agentTmobileBillApp/
 │   ├── llm_providers.py              # LLM connection: Groq / Ollama / Gemini / OpenRouter / Anthropic
 │   ├── extraction_agent.py           # Agent loop: read PDF -> LLM extract -> validate -> retry
 │   ├── bill_config.py                # Billing config: parse/validate/serialize (no Streamlit)
-│   └── config_ui.py                  # Billing config sidebar upload (TOML/YAML) + onboarding editor
+│   ├── config_ui.py                  # Billing config sidebar upload (TOML/YAML) + onboarding editor
+│   ├── bill_chat.py                  # AI assistant: bill context, prompt, Groq streaming (no Streamlit)
+│   └── chat_ui.py                    # "Ask AI about this bill" popover chat
 ├── webreadBillpdf.py                 # Original app; per-line math, CSV and email
-├── tests/test_billing.py             # Unit tests: config parsing and the per-person split
+├── tests/                            # Unit tests: config, per-person split, chat context
 ├── requirements.txt                  # Python dependencies (installed by Streamlit Cloud)
 ├── .streamlit/
 │   └── secrets.toml.example          # Template for secrets.toml (API keys + billing config)
@@ -45,6 +47,8 @@ Not committed (local only, ignored by .gitignore):
 | `tmobile_bill_agent/extraction_agent.py` | `run_bill_agent(...)` reads the PDF, locates the summary table, asks the LLM to copy it, validates it and retries with feedback. It also contains `balance_cents(...)` for auto-balancing. |
 | `tmobile_bill_agent/bill_config.py` | `parse_config()` validates the billing config, fed by `parse_toml()` / `parse_yaml()` (`parse_file()` picks by extension); `to_toml()` / `to_yaml()` write it; `find_unmapped()` lists bill lines nobody owns. |
 | `tmobile_bill_agent/config_ui.py` | `billing_config_sidebar()` loads the config (session > uploaded file > secrets); `onboarding_editor()` builds one from a bill. |
+| `tmobile_bill_agent/bill_chat.py` | `build_bill_context()` turns the bill, split and history into text for the model; `stream_answer()` streams the Groq reply. |
+| `tmobile_bill_agent/chat_ui.py` | `chat_popover()` draws the **Ask AI** button and the chat inside it. |
 | `webreadBillpdf.py` | Provides `deriveActualAmt(df, config)` (per-line/per-person math) and `validateAndSend()` (CSV + email to the members' emails). |
 | `.streamlit/secrets.toml` | Read by Streamlit as `st.secrets`: API keys and the `[billing]` config. |
 
@@ -166,6 +170,33 @@ can share one deployment, each bringing their own config file.
 Get a free Groq API key at https://console.groq.com/keys.
 
 **Ollama (local, no key):** only works when you run the app on your own machine, not on Streamlit Cloud.
+
+---
+
+## AI assistant chat
+
+Click **💬 Ask AI about this bill** (top right, on every page) to chat about the bill, for example
+*"Who pays the most this month and why?"* or *"How does this bill compare with last month?"*.
+
+- **Model:** Groq, using the same `GROQ_API_KEY` as the extraction agent. The default model is
+  `openai/gpt-oss-120b`; set `GROQ_CHAT_MODEL = "..."` in `secrets.toml` to change it. If no key
+  is configured, the popover asks for one.
+- **What the model sees:** the extracted bill table, the statement total, the per-person amounts,
+  the split rules, the due day and the saved monthly totals from **Bill history**. Lines are sent
+  as their config label plus the last 4 digits.
+- **Reading the statement PDF** (toggle in the popover, on by default once a PDF is uploaded):
+  the text of the bill PDF is sent too, so the assistant can answer about the account number,
+  dates and itemized charges. This text includes the account number, address and full phone
+  numbers. To stay under the Groq free-tier limit (8,000 tokens per minute), each question sends
+  page 1 plus the pages that best match the question, up to 10,000 characters (about 3,000
+  tokens); short bills are sent whole. Change the budget with `CHAT_PDF_CHARS = 6000` in
+  `secrets.toml`. If Groq says the request is too large, wait a minute, lower `CHAT_PDF_CHARS`
+  or ask a narrower question.
+- **Answers:** bill questions are answered only from that data, and the model says so when the
+  data doesn't contain the answer. General T-Mobile questions (fees, taxes, autopay) get general
+  answers marked as such. Double-check any numbers before acting on them.
+- The chat history stays in the browser session; **Clear chat** resets it. Only the last
+  12 messages are sent with each question.
 
 ---
 
