@@ -11,6 +11,22 @@ from tmobile_bill_agent.bill_chat import (
 from tmobile_bill_agent.llm_providers import LLMError
 
 HISTORY_KEY = "ai_chat_messages"
+BUTTON_CSS = """<style>
+.st-key-ai_chat_button [data-testid="stPopoverButton"] {
+    background: #E20074;                 /* T-Mobile magenta */
+    border: 1px solid #E20074;
+    color: #FFFFFF;
+    font-weight: 600;
+    box-shadow: 0 2px 10px rgba(226, 0, 116, 0.35);
+}
+.st-key-ai_chat_button [data-testid="stPopoverButton"] * { color: #FFFFFF; }
+.st-key-ai_chat_button [data-testid="stPopoverButton"]:hover,
+.st-key-ai_chat_button [data-testid="stPopoverButton"]:focus-visible {
+    background: #B8005E;
+    border-color: #B8005E;
+    color: #FFFFFF;
+}
+</style>"""
 SUGGESTIONS = ["Who pays the most this month and why?",
                "What is the account number and the due date?",
                "Explain how the account charge is split.",
@@ -39,7 +55,11 @@ def chat_popover(context: str, pdf_pages: list[str] | None = None, api_key: str 
         pdf_budget = DEFAULT_PDF_CHARS
     history = st.session_state.setdefault(HISTORY_KEY, [])
 
-    with (container or st).popover("💬 Ask AI about this bill", use_container_width=True):
+    # Streamlit 1.41's popover has no color option, so style it with CSS. The keyed
+    # container adds the class .st-key-ai_chat_button, so only this button changes.
+    st.markdown(BUTTON_CSS, unsafe_allow_html=True)
+    button_box = (container or st).container(key="ai_chat_button")
+    with button_box.popover("💬 Ask AI about this bill", use_container_width=True):
         read_pdf = False
         if pdf_pages:
             read_pdf = st.toggle(
